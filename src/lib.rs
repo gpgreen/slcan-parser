@@ -107,24 +107,35 @@ impl CanserialFrame {
     }
 
     /// a frame
-    pub fn new_frame(can_id: impl Into<Id>, data: &[u8]) -> Result<Self, SlcanError> {
-        let mut frame = CanserialFrame {
-            rtr: false,
-            dlc: FrameDataLen::try_from(data.len())?,
-            id: can_id.into(),
-            data: [0; 8],
-        };
-        frame.data[..frame.dlc.raw()].clone_from_slice(data);
-        Ok(frame)
+    pub fn new_frame(can_id: impl Into<Id>, data: &[u8]) -> Option<Self> {
+        match FrameDataLen::try_from(data.len()) {
+            Ok(fdl) => {
+                let mut frame = CanserialFrame {
+                    rtr: false,
+                    dlc: fdl,
+                    id: can_id.into(),
+                    data: [0_u8; 8],
+                };
+                frame.data[..frame.dlc.raw()].clone_from_slice(data);
+                Some(frame)
+            }
+            Err(_) => None,
+        }
     }
 
-    pub fn new_remote_frame(can_id: impl Into<Id>, dlc: usize) -> Result<Self, SlcanError> {
-        Ok(CanserialFrame {
-            rtr: true,
-            dlc: FrameDataLen::try_from(dlc)?,
-            id: can_id.into(),
-            data: [0; 8],
-        })
+    pub fn new_remote_frame(can_id: impl Into<Id>, dlc: usize) -> Option<Self> {
+        match FrameDataLen::try_from(dlc) {
+            Ok(fdl) => {
+                let frame = CanserialFrame {
+                    rtr: true,
+                    dlc: fdl,
+                    id: can_id.into(),
+                    data: [0_u8; 8],
+                };
+                Some(frame)
+            }
+            Err(_) => None,
+        }
     }
 }
 
@@ -157,20 +168,14 @@ impl Frame for CanserialFrame {
     ///
     /// This will return `None` if the data slice is too long.
     fn new(id: impl Into<Id>, data: &[u8]) -> Option<Self> {
-        match CanserialFrame::new_frame(id, data) {
-            Ok(frame) => Some(frame),
-            Err(_) => None,
-        }
+        CanserialFrame::new_frame(id, data)
     }
 
     /// Creates a new remote frame (RTR bit set).
     ///
     /// This will return `None` if the data length code (DLC) is not valid.
     fn new_remote(id: impl Into<Id>, dlc: usize) -> Option<Self> {
-        match CanserialFrame::new_remote_frame(id, dlc) {
-            Ok(frame) => Some(frame),
-            Err(_) => None,
-        }
+        CanserialFrame::new_remote_frame(id, dlc)
     }
 
     /// Returns true if this frame is a extended frame.
