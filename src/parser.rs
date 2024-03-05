@@ -24,6 +24,15 @@ machine!(
         Wait,
         StandardId { offset: usize, stdrtr: bool },
         ExtendedId { offset: usize, extrtr: bool },
+        PossibleHexCommand { cmd: u8 },
+        GetSpeed,
+        GetBitTime { offset: usize, cur_bt: u32 },
+        HaveOpen,
+        HaveClose,
+        HaveReadStatus,
+        HaveListen,
+        HaveSpeed { speed: u8 },
+        HaveBitTime { bt: u32 },
         DataLen { rtr: bool },
         DataBytes { len: usize, offset: usize },
         HaveFrame { flen: usize },
@@ -39,12 +48,21 @@ pub struct Advance {
 // the allowed state, transition pairs
 transitions!(FrameParser,
              [
-                 (Wait, Advance) => [StandardId, ExtendedId, Wait],
+                 (Wait, Advance) => [StandardId, ExtendedId, PossibleHexCommand, HaveOpen, HaveListen, GetSpeed, GetBitTime, Wait],
                  (StandardId, Advance) => [StandardId, DataLen],
                  (ExtendedId, Advance) => [ExtendedId, DataLen],
                  (DataLen, Advance) => [DataBytes, HaveFrame],
                  (DataBytes, Advance) => [DataBytes, HaveFrame],
-                 (HaveFrame, Advance) => Wait
+                 (HaveFrame, Advance) => Wait,
+                 (PossibleHexCommand, Advance) => [HaveClose, HaveReadStatus, Wait],
+                 (GetSpeed, Advance) => [HaveSpeed, Wait],
+                 (GetBitTime, Advance) => [GetBitTime, HaveBitTime, Wait],
+                 (HaveOpen, Advance) => Wait,
+                 (HaveClose, Advance) => Wait,
+                 (HaveListen, Advance) => Wait,
+                 (HaveSpeed, Advance) => Wait,
+                 (HaveBitTime, Advance) => Wait,
+                 (HaveReadStatus, Advance) => Wait
              ]
 );
 
@@ -60,11 +78,24 @@ methods!(FrameParser,
              DataBytes => get len: usize,
              DataBytes => fn can_collect_data(&self) -> bool,
              HaveFrame => get flen: usize,
-             HaveFrame => fn have_complete_frame(&self) -> bool
+             HaveFrame => fn have_complete_frame(&self) -> bool,
+             HaveOpen => fn call_open(&self) -> bool,
+             HaveClose => fn call_close(&self) -> bool,
+             HaveReadStatus => fn call_read_status(&self) -> bool,
+             HaveListen => fn call_listen(&self) -> bool,
+             HaveSpeed => get speed: u8,
+             HaveSpeed => fn call_speed(&self) -> bool,
+             HaveBitTime => get bt: u32,
+             HaveBitTime => fn call_bit_time(&self) -> bool,
+             PossibleHexCommand => get cmd: u8
          ]
 );
 
-/// wait state looking for packet header of '[trTR]'
+/// wait state looking for packet header of '[trTR]' or a command
+///
+/// If the byte is a 'C' or 'F', we need to check the next character
+/// to make sure we aren't in midstream, a command will be followed
+/// by a '\r', not another hex character or something else
 impl Wait {
     pub fn on_advance(self, input: Advance) -> FrameParser {
         match input.byte {
@@ -72,6 +103,11 @@ impl Wait {
             b'r' => FrameParser::standard_id(0, true),
             b'T' => FrameParser::extended_id(0, false),
             b'R' => FrameParser::extended_id(0, true),
+            b'O' => FrameParser::have_open(),
+            b'C' | b'F' => FrameParser::possible_hex_command(input.byte),
+            b'L' => FrameParser::have_listen(),
+            b'S' => FrameParser::get_speed(),
+            b's' => FrameParser::get_bit_time(0, 0),
             _ => FrameParser::wait(),
         }
     }
@@ -144,6 +180,115 @@ impl HaveFrame {
 
     pub fn have_complete_frame(&self) -> bool {
         true
+    }
+}
+
+/// HaveOpen
+impl HaveOpen {
+    pub fn on_advance(self, _input: Advance) -> Wait {
+        Wait {}
+    }
+
+    pub fn call_open(&self) -> bool {
+        true
+    }
+}
+
+/// HaveClose
+impl HaveClose {
+    pub fn on_advance(self, _input: Advance) -> Wait {
+        Wait {}
+    }
+
+    pub fn call_close(&self) -> bool {
+        true
+    }
+}
+
+/// HaveReadStatus
+impl HaveReadStatus {
+    pub fn on_advance(self, _input: Advance) -> Wait {
+        Wait {}
+    }
+
+    pub fn call_read_status(&self) -> bool {
+        true
+    }
+}
+
+/// HaveListen
+impl HaveListen {
+    pub fn on_advance(self, _input: Advance) -> Wait {
+        Wait {}
+    }
+
+    pub fn call_listen(&self) -> bool {
+        true
+    }
+}
+
+/// GetSpeed
+impl GetSpeed {
+    pub fn on_advance(self, input: Advance) -> FrameParser {
+        match from_hex(input.byte) {
+            Ok(speed) => FrameParser::have_speed(speed),
+            Err(_) => FrameParser::wait(),
+        }
+    }
+}
+
+/// HaveSpeed
+impl HaveSpeed {
+    pub fn on_advance(self, _input: Advance) -> Wait {
+        Wait {}
+    }
+
+    pub fn call_speed(&self) -> bool {
+        true
+    }
+}
+
+/// HaveBitTime
+impl HaveBitTime {
+    pub fn on_advance(self, _input: Advance) -> Wait {
+        Wait {}
+    }
+
+    pub fn call_bit_time(&self) -> bool {
+        true
+    }
+}
+
+/// PossibleHexCommand
+impl PossibleHexCommand {
+    pub fn on_advance(self, input: Advance) -> FrameParser {
+        if input.byte == b'\r' && self.cmd == b'C' {
+            FrameParser::have_close()
+        } else if input.byte == b'\r' && self.cmd == b'F' {
+            FrameParser::have_read_status()
+        } else {
+            FrameParser::wait()
+        }
+    }
+}
+
+/// Get Bit Time
+impl GetBitTime {
+    pub fn on_advance(self, input: Advance) -> FrameParser {
+        if input.byte == b'\r' {
+            FrameParser::have_bit_time(self.cur_bt)
+        } else if self.offset < 8 {
+            match from_hex(input.byte) {
+                Ok(bt) => {
+                    let bt = (self.cur_bt << 4) + bt as u32;
+                    FrameParser::get_bit_time(self.offset + 1, bt)
+                }
+                Err(_) => FrameParser::wait(),
+            }
+        } else {
+            // user sent too many hex characters
+            FrameParser::wait()
+        }
     }
 }
 

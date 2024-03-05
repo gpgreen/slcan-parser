@@ -3,7 +3,10 @@
 //!
 //! ## Features
 //!
-//! This crate parses can frames that are in Serial format as used by the Linux kernel. The
+//! This crate parses can frames that are in Serial format as used by the can-utils package used in the Linux kernel.
+//! A serial port can be used as a CAN interface driver that will setup the CAN hardware, transmit and receive
+//! CAN frames over the serial port in the format defined in that utility. For more information see that package.
+//!
 //! frames begin with one character that defines what type of CAN frame it is:
 //! 't' - a standard id CAN frame
 //! 'r' - a standard id RTR CAN frame
@@ -24,6 +27,27 @@
 //! the bytes to represent this are:
 //! t0232A0B0
 //!
+//! The alternative to a frame, are commands prefixed by a single character
+//! 'C' - open CAN
+//! 'O' - close CAN
+//! 'L' - listen only on CAN
+//! 'F' - read status flags to reset error states
+//! 'Sc' - set CAN speed where c is 0..8
+//! 'shhhhhhhh' - set bit time register value, maximum of 8 hex characters to follow
+//! The speed values are as follows:
+//!   <speed>           Bitrate
+//!         0             10 Kbit/s
+//!         1             20 Kbit/s
+//!         2             50 Kbit/s
+//!         3            100 Kbit/s
+//!         4            125 Kbit/s
+//!         5            250 Kbit/s
+//!         6            500 Kbit/s
+//!         7            800 Kbit/s
+//!         8           1000 Kbit/s
+//!
+//! The commands are followed by a CR-LF sequence
+//!
 //! This crate defines a `FrameParser`` which is a state machine that parses
 //! SlcanFrame's a byte at a time. This is intended for use with Serial Port
 //! hardware. The parser is implemented with the `machine` crate.
@@ -31,7 +55,6 @@
 #[macro_use]
 extern crate machine;
 
-// pull in library
 mod parser;
 
 use crate::parser::FrameParser;
@@ -47,6 +70,8 @@ pub enum SlcanError {
     DataLen(usize),
     /// Standard id value too large
     StandardIdOverflow,
+    /// CAN Bus speed not known
+    UnknownCanBusSpeed,
 }
 
 impl Error for SlcanError {
@@ -55,7 +80,56 @@ impl Error for SlcanError {
     }
 }
 
-/// Constrain a usize to values allowed for frame data length [0..8]
+/// Enum for CAN bus speed
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SlCanBusSpeed {
+    C10,
+    C20,
+    C50,
+    C100,
+    C125,
+    C250,
+    C500,
+    C800,
+    C1000,
+}
+
+impl TryFrom<u8> for SlCanBusSpeed {
+    type Error = SlcanError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(SlCanBusSpeed::C10),
+            1 => Ok(SlCanBusSpeed::C20),
+            2 => Ok(SlCanBusSpeed::C50),
+            3 => Ok(SlCanBusSpeed::C100),
+            4 => Ok(SlCanBusSpeed::C125),
+            5 => Ok(SlCanBusSpeed::C250),
+            6 => Ok(SlCanBusSpeed::C500),
+            7 => Ok(SlCanBusSpeed::C800),
+            8 => Ok(SlCanBusSpeed::C1000),
+            _ => Err(SlcanError::UnknownCanBusSpeed),
+        }
+    }
+}
+
+/// Enum for possible parser completions
+///
+/// This enum is updated after each byte is received
+/// by parser
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SlcanIncoming {
+    Frame(CanserialFrame),
+    Open,
+    Close,
+    ReadStatus,
+    Listen,
+    Speed(SlCanBusSpeed),
+    BitTime(u32),
+    Wait,
+}
+
+/// Constrain a usize to values allowed for frame data length [0..=8]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct FrameDataLen(usize);
 
@@ -87,7 +161,7 @@ impl TryFrom<usize> for FrameDataLen {
 }
 
 /// CanserialFrame
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CanserialFrame {
     rtr: bool,
     dlc: FrameDataLen,
@@ -196,7 +270,7 @@ impl Frame for CanserialFrame {
         self.id
     }
 
-    /// Returns the data length code (DLC) which is in the range 0..8.
+    /// Returns the data length code (DLC) which is in the range 0..=8.
     ///
     /// For data frames the DLC value always matches the length of the data.
     /// Remote frames do not carry any data, yet the DLC can be greater than 0.
@@ -228,11 +302,12 @@ impl FrameByteStreamHandler {
 
     /// parser that works incrementally
     ///
-    /// If the byte completes an incoming frame, that frame is returned, otherwise
-    /// The ok result is None. If there is a parsing error, that is returned.
+    /// If the byte completes an incoming frame, that frame is returned.
+    /// If the byte completes a command, that command is returned, otherwise
+    /// will return `SlcanIncoming::Wait`. If there is a parsing error, that is returned.
     /// If a frame was returned, the internal state is reset and the parser continues
     /// to work.
-    pub fn feed(&mut self, byte: u8) -> Result<Option<CanserialFrame>, SlcanError> {
+    pub fn feed(&mut self, byte: u8) -> Result<SlcanIncoming, SlcanError> {
         self.parser = self
             .parser
             .clone()
@@ -242,9 +317,29 @@ impl FrameByteStreamHandler {
             let frame = self.frame_buffer;
             // reset input frame
             self.frame_buffer = CanserialFrame::empty();
-            Ok(Some(frame))
+            Ok(SlcanIncoming::Frame(frame))
+        } else if self.parser.call_open().is_some() {
+            Ok(SlcanIncoming::Open)
+        } else if self.parser.call_close().is_some() {
+            Ok(SlcanIncoming::Close)
+        } else if self.parser.call_listen().is_some() {
+            Ok(SlcanIncoming::Listen)
+        } else if self.parser.call_read_status().is_some() {
+            Ok(SlcanIncoming::ReadStatus)
+        } else if self.parser.call_speed().is_some() {
+            let speed = match self.parser.speed() {
+                Some(s) => SlCanBusSpeed::try_from(*s)?,
+                None => panic!("speed command has no value"),
+            };
+            Ok(SlcanIncoming::Speed(speed))
+        } else if self.parser.call_bit_time().is_some() {
+            let bt = match self.parser.bt() {
+                Some(bt) => *bt,
+                None => panic!("bit time command has no value"),
+            };
+            Ok(SlcanIncoming::BitTime(bt))
         } else {
-            Ok(None)
+            Ok(SlcanIncoming::Wait)
         }
     }
 }
@@ -420,5 +515,139 @@ mod tests {
         assert_eq!(frame.rtr, false);
         assert_eq!(frame.data[..4], [0xde, 0xad, 0xbe, 0xef]);
         info!("frame: {}", frame);
+    }
+
+    #[test]
+    fn test_open() {
+        let framedata = b"O";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        parser = parser
+            .parse_received_byte(framedata[0], &mut frame)
+            .unwrap();
+        assert!(parser.call_open().unwrap());
+    }
+
+    #[test]
+    fn test_listen() {
+        let framedata = b"L";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        parser = parser
+            .parse_received_byte(framedata[0], &mut frame)
+            .unwrap();
+        assert!(parser.call_listen().unwrap());
+    }
+
+    #[test]
+    fn test_close() {
+        let framedata = b"C\r";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_close().is_some());
+    }
+
+    #[test]
+    fn test_bad_close() {
+        let framedata = b"CD";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_close().is_none());
+    }
+
+    #[test]
+    fn test_read_status() {
+        let framedata = b"F\r";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_read_status().is_some());
+    }
+
+    #[test]
+    fn test_speed() {
+        let framedata = b"S3";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_speed().is_some());
+        assert!(parser.speed().is_some());
+        let speed = *parser.speed().unwrap();
+        assert_eq!(speed, 3);
+        assert_eq!(SlCanBusSpeed::try_from(speed).unwrap(), SlCanBusSpeed::C100);
+    }
+
+    #[test]
+    fn test_bit_time() {
+        let framedata = b"sFFFFFFFF\r";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_bit_time().is_some());
+        assert!(parser.bt().is_some());
+        let bt = *parser.bt().unwrap();
+        assert_eq!(bt, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn test_bit_time_too_long() {
+        // use 9 hex chars
+        let framedata = b"sFFFFFFFFF\r";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            if parser.call_bit_time().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_bit_time().is_none());
+    }
+
+    #[test]
+    fn test_bit_time_empty() {
+        let framedata = b"s\r";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        assert!(parser.call_bit_time().is_some());
+        assert!(parser.bt().is_some());
+        let bt = *parser.bt().unwrap();
+        assert_eq!(bt, 0);
     }
 }
