@@ -15,7 +15,11 @@ categories = ["embedded", "no-std"]
 embedded-hal = { version = "0.2.7", features = ["unproven"] }
 machine = "0.3.0"
 log = "0.4.21"
+defmt = { version = "0.3", optional = true }
 
 [dev-dependencies]
 test-log = "0.2.11"
 env_logger = "*"
+
+[features]
+defmt = ["dep:defmt"]

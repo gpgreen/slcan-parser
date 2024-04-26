@@ -28,8 +28,8 @@
 //! t0232A0B0
 //!
 //! The alternative to a frame, are commands prefixed by a single character
-//! 'C' - open CAN
-//! 'O' - close CAN
+//! 'O' - open CAN
+//! 'C' - close CAN
 //! 'L' - listen only on CAN
 //! 'F' - read status flags to reset error states
 //! 'Sc' - set CAN speed where c is 0..8
@@ -57,12 +57,16 @@ extern crate machine;
 
 mod parser;
 
+#[cfg(feature = "defmt")]
+use defmt::Format;
+
 use crate::parser::FrameParser;
 use core::convert::TryFrom;
 use embedded_hal::can::{Error, ErrorKind, Frame, Id, StandardId};
 
 /// Errors that can be encountered in this crate
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub enum SlcanError {
     /// Char received for binary field not a hexadecimal character
     NotAHexChar,
@@ -82,6 +86,7 @@ impl Error for SlcanError {
 
 /// Enum for CAN bus speed
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub enum SlCanBusSpeed {
     C10,
     C20,
@@ -118,6 +123,7 @@ impl TryFrom<u8> for SlCanBusSpeed {
 /// This enum is updated after each byte is received
 /// by parser
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub enum SlcanIncoming {
     Frame(CanserialFrame),
     Open,
@@ -131,6 +137,7 @@ pub enum SlcanIncoming {
 
 /// Constrain a usize to values allowed for frame data length [0..=8]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub struct FrameDataLen(usize);
 
 impl FrameDataLen {
@@ -160,12 +167,29 @@ impl TryFrom<usize> for FrameDataLen {
     }
 }
 
+/// wrap Id, so we can implement defmt::Format on embedded_hal::can::Id
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct SlcanId(Id);
+
+#[cfg(feature = "defmt")]
+impl Format for SlcanId {
+    fn format(&self, fmt: defmt::Formatter) {
+        // Format as hexadecimal.
+        let id = match self.0 {
+            Id::Standard(id) => ("Standard", id.as_raw() as u32),
+            Id::Extended(id) => ("Extended", id.as_raw()),
+        };
+        defmt::write!(fmt, "Id({}:{:x})", id.0, id.1);
+    }
+}
+
 /// CanserialFrame
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub struct CanserialFrame {
     rtr: bool,
     dlc: FrameDataLen,
-    id: Id,
+    id: SlcanId,
     data: [u8; 8],
 }
 
@@ -175,7 +199,7 @@ impl CanserialFrame {
         CanserialFrame {
             rtr: false,
             dlc: FrameDataLen::new(0).unwrap(),
-            id: Id::Standard(StandardId::ZERO),
+            id: SlcanId(Id::Standard(StandardId::ZERO)),
             data: [0; 8],
         }
     }
@@ -187,7 +211,7 @@ impl CanserialFrame {
                 let mut frame = CanserialFrame {
                     rtr: false,
                     dlc: fdl,
-                    id: can_id.into(),
+                    id: SlcanId(can_id.into()),
                     data: [0_u8; 8],
                 };
                 frame.data[..frame.dlc.raw()].clone_from_slice(data);
@@ -203,7 +227,7 @@ impl CanserialFrame {
                 let frame = CanserialFrame {
                     rtr: true,
                     dlc: fdl,
-                    id: can_id.into(),
+                    id: SlcanId(can_id.into()),
                     data: [0_u8; 8],
                 };
                 Some(frame)
@@ -214,16 +238,17 @@ impl CanserialFrame {
 }
 
 impl core::fmt::Display for CanserialFrame {
+    /// Implement Display to get Serial CAN frame strings
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let starting_char = ['t', 'r', 'T', 'R'];
-        let (mut offset, id) = match self.id {
+        let (mut offset, id) = match self.id.0 {
             Id::Standard(std) => (0, std.as_raw() as u32),
             Id::Extended(ext) => (2, ext.as_raw()),
         };
         if self.rtr {
             offset += 1;
         }
-        match self.id {
+        match self.id.0 {
             Id::Standard(_) => write!(f, "{}{:03x}", starting_char[offset], id)?,
             Id::Extended(_) => write!(f, "{}{:08x}", starting_char[offset], id)?,
         }
@@ -254,7 +279,7 @@ impl Frame for CanserialFrame {
 
     /// Returns true if this frame is a extended frame.
     fn is_extended(&self) -> bool {
-        match self.id {
+        match self.id.0 {
             Id::Standard(_) => false,
             Id::Extended(_) => true,
         }
@@ -267,7 +292,7 @@ impl Frame for CanserialFrame {
 
     /// Returns the frame identifier.
     fn id(&self) -> Id {
-        self.id
+        self.id.0
     }
 
     /// Returns the data length code (DLC) which is in the range 0..=8.
@@ -381,7 +406,7 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
-        assert_eq!(frame.id, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(8).unwrap());
         assert_eq!(frame.rtr, false);
         assert_eq!(frame.data, [0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef]);
@@ -403,7 +428,7 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
-        assert_eq!(frame.id, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(4).unwrap());
         assert_eq!(frame.rtr, true);
         info!("frame: {}", frame);
@@ -424,7 +449,7 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
-        assert_eq!(frame.id, Id::Extended(ExtendedId::new(0x1).unwrap()));
+        assert_eq!(frame.id.0, Id::Extended(ExtendedId::new(0x1).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(4).unwrap());
         assert_eq!(frame.rtr, false);
         assert_eq!(frame.data[..4], [0xde, 0xad, 0xbe, 0xef]);
@@ -446,7 +471,7 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
-        assert_eq!(frame.id, Id::Extended(ExtendedId::new(0x1).unwrap()));
+        assert_eq!(frame.id.0, Id::Extended(ExtendedId::new(0x1).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(4).unwrap());
         assert_eq!(frame.rtr, true);
         info!("frame: {}", frame);
@@ -467,7 +492,7 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
-        assert_eq!(frame.id, Id::Standard(StandardId::new(0x27).unwrap()));
+        assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x27).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(0).unwrap());
         assert_eq!(frame.rtr, false);
         assert_eq!(frame.data, [0, 0, 0, 0, 0, 0, 0, 0]);
@@ -510,7 +535,7 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
-        assert_eq!(frame.id, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(4).unwrap());
         assert_eq!(frame.rtr, false);
         assert_eq!(frame.data[..4], [0xde, 0xad, 0xbe, 0xef]);
@@ -649,5 +674,32 @@ mod tests {
         assert!(parser.bt().is_some());
         let bt = *parser.bt().unwrap();
         assert_eq!(bt, 0);
+    }
+
+    #[test]
+    fn command_mid_sequence() {
+        // parse commands assuming start in middle of a frame
+        let framedata = b"BEEFDEADBEEFDE\r\nO\r\nS5\r\n";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        let mut got_open = false;
+        let mut got_speed = Ok(SlCanBusSpeed::C10);
+        for byte in framedata.iter() {
+            if parser.have_complete_frame().is_some() {
+                panic!();
+            }
+            if parser.call_open().is_some() {
+                got_open = true;
+            }
+            if parser.call_speed().is_some() {
+                got_speed = SlCanBusSpeed::try_from(*parser.speed().unwrap());
+            }
+            parser = parser.parse_received_byte(*byte, &mut frame).unwrap();
+        }
+        if parser.have_complete_frame().is_some() {
+            panic!();
+        }
+        assert!(got_open);
+        assert_eq!(got_speed, Ok(SlCanBusSpeed::C250));
     }
 }

@@ -1,6 +1,11 @@
+//! # parser
+//!
+//! This contains the parser for Slcan. It uses the machine
+//! crate for the parsing state machine
 use crate::CanserialFrame;
 use crate::FrameDataLen;
 use crate::SlcanError;
+use crate::SlcanId;
 use embedded_hal::can;
 use log::*;
 
@@ -19,6 +24,7 @@ fn from_hex(byte: u8) -> Result<u8, SlcanError> {
 
 // Define the machine states
 machine!(
+    /// The state machine `FrameParser`
     #[derive(Clone, Debug, PartialEq)]
     enum FrameParser {
         Wait,
@@ -322,7 +328,7 @@ impl FrameParser {
             debug!("frame data {} is {}", i >> 1, frame.data[i >> 1]);
         } else if self.can_collect_stdid().is_some() {
             frame.rtr = *self.stdrtr().expect("frame rtr is None");
-            let raw_id = match frame.id {
+            let raw_id = match frame.id.0 {
                 can::Id::Standard(id) => id.as_raw(),
                 _ => 0,
             };
@@ -331,11 +337,11 @@ impl FrameParser {
                 Some(x) => x,
                 None => return Err(SlcanError::StandardIdOverflow),
             };
-            frame.id = can::Id::Standard(new_id);
+            frame.id = SlcanId(can::Id::Standard(new_id));
             debug!("frame id: {:?}", frame.id);
         } else if self.can_collect_extid().is_some() {
             frame.rtr = *self.extrtr().expect("frame rtr is None");
-            let raw_id = match frame.id {
+            let raw_id = match frame.id.0 {
                 can::Id::Standard(sid) => sid.as_raw() as u32,
                 can::Id::Extended(eid) => eid.as_raw(),
             };
@@ -344,7 +350,7 @@ impl FrameParser {
                 Some(x) => x,
                 None => return Err(SlcanError::StandardIdOverflow),
             };
-            frame.id = can::Id::Extended(new_id);
+            frame.id = SlcanId(can::Id::Extended(new_id));
             debug!("frame id: {:?}", frame.id);
         }
         let p = self.on_advance(Advance { byte });
