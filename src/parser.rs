@@ -64,7 +64,7 @@ transitions!(FrameParser,
                  (GetSpeed, Advance) => [HaveSpeed, Wait],
                  (GetBitTime, Advance) => [GetBitTime, HaveBitTime, Wait],
                  (HaveOpen, Advance) => Wait,
-                 (HaveClose, Advance) => Wait,
+                 (HaveClose, Advance) => [StandardId, ExtendedId, PossibleHexCommand, HaveOpen, HaveListen, GetSpeed, GetBitTime, Wait],
                  (HaveListen, Advance) => Wait,
                  (HaveSpeed, Advance) => Wait,
                  (HaveBitTime, Advance) => Wait,
@@ -97,6 +97,24 @@ methods!(FrameParser,
          ]
 );
 
+/// given a byte, find the next parse state, this is allowed at Wait and at HaveClose
+/// HaveClose because the byte 'C' can also be a hex character, so the parser has to
+/// figure out if it is followed by a \r, if so, then next char can be a start byte
+fn match_on_start_byte(byte: u8) -> FrameParser {
+    match byte {
+        b't' => FrameParser::standard_id(0, false),
+        b'r' => FrameParser::standard_id(0, true),
+        b'T' => FrameParser::extended_id(0, false),
+        b'R' => FrameParser::extended_id(0, true),
+        b'O' => FrameParser::have_open(),
+        b'C' | b'F' => FrameParser::possible_hex_command(byte),
+        b'L' => FrameParser::have_listen(),
+        b'S' => FrameParser::get_speed(),
+        b's' => FrameParser::get_bit_time(0, 0),
+        _ => FrameParser::wait(),
+    }
+}
+
 /// wait state looking for packet header of '[trTR]' or a command
 ///
 /// If the byte is a 'C' or 'F', we need to check the next character
@@ -104,18 +122,7 @@ methods!(FrameParser,
 /// by a '\r', not another hex character or something else
 impl Wait {
     pub fn on_advance(self, input: Advance) -> FrameParser {
-        match input.byte {
-            b't' => FrameParser::standard_id(0, false),
-            b'r' => FrameParser::standard_id(0, true),
-            b'T' => FrameParser::extended_id(0, false),
-            b'R' => FrameParser::extended_id(0, true),
-            b'O' => FrameParser::have_open(),
-            b'C' | b'F' => FrameParser::possible_hex_command(input.byte),
-            b'L' => FrameParser::have_listen(),
-            b'S' => FrameParser::get_speed(),
-            b's' => FrameParser::get_bit_time(0, 0),
-            _ => FrameParser::wait(),
-        }
+        match_on_start_byte(input.byte)
     }
 }
 
@@ -202,8 +209,8 @@ impl HaveOpen {
 
 /// HaveClose
 impl HaveClose {
-    pub fn on_advance(self, _input: Advance) -> Wait {
-        Wait {}
+    pub fn on_advance(self, input: Advance) -> FrameParser {
+        match_on_start_byte(input.byte)
     }
 
     pub fn call_close(&self) -> bool {

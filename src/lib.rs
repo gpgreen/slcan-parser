@@ -543,8 +543,19 @@ mod tests {
     }
 
     #[test]
+    fn test_empty() {
+        let framedata = b"\r";
+        let mut frame = CanserialFrame::empty();
+        let mut parser = FrameParser::new();
+        parser = parser
+            .parse_received_byte(framedata[0], &mut frame)
+            .unwrap();
+        assert_eq!(parser, FrameParser::Wait(parser::Wait {}));
+    }
+
+    #[test]
     fn test_open() {
-        let framedata = b"O";
+        let framedata = b"O\r";
         let mut frame = CanserialFrame::empty();
         let mut parser = FrameParser::new();
         parser = parser
@@ -701,5 +712,50 @@ mod tests {
         }
         assert!(got_open);
         assert_eq!(got_speed, Ok(SlCanBusSpeed::C250));
+    }
+
+    #[test]
+    fn feed_empty() {
+        let framedata = b"C\rS5\r";
+        let mut handler = FrameByteStreamHandler::new();
+        for byte in framedata.iter() {
+            let res = handler.feed(*byte);
+            debug!("{:?}", res);
+        }
+    }
+
+    #[test]
+    fn feed_short_tx() {
+        let framedata = b"t0270\r";
+        let mut handler = FrameByteStreamHandler::new();
+        for byte in framedata.iter() {
+            let incoming = handler.feed(*byte).unwrap();
+            if let SlcanIncoming::Frame(frame) = incoming {
+                assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x27).unwrap()));
+                assert_eq!(frame.dlc, FrameDataLen::new(0).unwrap());
+                assert_eq!(frame.rtr, false);
+                assert_eq!(frame.data, [0, 0, 0, 0, 0, 0, 0, 0]);
+            }
+            debug!("{:?}", incoming);
+        }
+    }
+
+    #[test]
+    fn feed_speed_short_tx() {
+        let framedata = b"S5\r\nt0270\r\n";
+        let mut handler = FrameByteStreamHandler::new();
+        for byte in framedata.iter() {
+            let incoming = handler.feed(*byte).unwrap();
+            if let SlcanIncoming::Frame(frame) = incoming {
+                assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x27).unwrap()));
+                assert_eq!(frame.dlc, FrameDataLen::new(0).unwrap());
+                assert_eq!(frame.rtr, false);
+                assert_eq!(frame.data, [0, 0, 0, 0, 0, 0, 0, 0]);
+            }
+            if let SlcanIncoming::Speed(s) = incoming {
+                assert_eq!(s, SlCanBusSpeed::C250);
+            }
+            debug!("{:?}", incoming);
+        }
     }
 }
