@@ -20,6 +20,7 @@ defmt = { version = "0.3", optional = true }
 [dev-dependencies]
 test-log = "0.2.11"
 env_logger = "*"
+heapless = "0.8"
 
 [features]
 defmt = ["dep:defmt"]

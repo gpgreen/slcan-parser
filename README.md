@@ -2,6 +2,10 @@
 
 Library to parse or create Serial CAN data strings as used in the linux serial CAN device
 
+## Protocol
+
+[can-utils](https://github.com/linux-can/can-utils.git)
+
 ## License
 
 Licensed under either of

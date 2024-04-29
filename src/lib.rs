@@ -255,7 +255,7 @@ impl core::fmt::Display for CanserialFrame {
         write!(f, "{:x}", self.dlc.0)?;
         if !self.rtr && self.dlc.0 != 0 {
             for byte in self.data.iter() {
-                write!(f, "{:x}", *byte)?;
+                write!(f, "{:02x}", *byte)?;
             }
         }
         Ok(())
@@ -372,7 +372,9 @@ impl FrameByteStreamHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::fmt::Write;
     use embedded_hal::can::ExtendedId;
+    use heapless::String;
     use log::*;
     use test_log::test;
 
@@ -389,6 +391,29 @@ mod tests {
             FrameDataLen::try_from(10_usize),
             Err(crate::SlcanError::DataLen(10))
         ));
+    }
+
+    #[test]
+    fn new_frame() {
+        let id = Id::Standard(StandardId::new(0x1).unwrap());
+        let frame =
+            CanserialFrame::new_frame(id, &[0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8]).unwrap();
+        assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.dlc, FrameDataLen::new(8).unwrap());
+        assert_eq!(frame.rtr, false);
+        assert_eq!(frame.data, [0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8]);
+        let mut buffer: String<32> = String::new();
+        write!(&mut buffer, "{}", frame).unwrap();
+        assert_eq!(buffer, "t00180102030405060708");
+
+        let id = Id::Standard(StandardId::new(0x1).unwrap());
+        let frame = CanserialFrame::new_remote_frame(id, 4).unwrap();
+        assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.dlc, FrameDataLen::new(4).unwrap());
+        assert_eq!(frame.rtr, true);
+        let mut buffer: String<32> = String::new();
+        write!(&mut buffer, "{}", frame).unwrap();
+        assert_eq!(buffer, "r0014");
     }
 
     #[test]
