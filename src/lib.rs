@@ -57,12 +57,14 @@ extern crate machine;
 
 mod parser;
 
+mod hal_02;
+
 #[cfg(feature = "defmt")]
 use defmt::Format;
 
 use crate::parser::FrameParser;
 use core::convert::TryFrom;
-use embedded_hal::can::{Error, ErrorKind, Frame, Id, StandardId};
+use embedded_can::{Frame, Id, StandardId};
 
 /// Errors that can be encountered in this crate
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -78,9 +80,9 @@ pub enum SlcanError {
     UnknownCanBusSpeed,
 }
 
-impl Error for SlcanError {
-    fn kind(&self) -> ErrorKind {
-        ErrorKind::Other
+impl embedded_can::Error for SlcanError {
+    fn kind(&self) -> embedded_can::ErrorKind {
+        embedded_can::ErrorKind::Other
     }
 }
 
@@ -205,13 +207,13 @@ impl CanserialFrame {
     }
 
     /// a frame
-    pub fn new_frame(can_id: impl Into<Id>, data: &[u8]) -> Option<Self> {
+    pub fn new_frame(can_id: SlcanId, data: &[u8]) -> Option<Self> {
         match FrameDataLen::try_from(data.len()) {
             Ok(fdl) => {
                 let mut frame = CanserialFrame {
                     rtr: false,
                     dlc: fdl,
-                    id: SlcanId(can_id.into()),
+                    id: can_id,
                     data: [0_u8; 8],
                 };
                 frame.data[..frame.dlc.raw()].clone_from_slice(data);
@@ -221,13 +223,13 @@ impl CanserialFrame {
         }
     }
 
-    pub fn new_remote_frame(can_id: impl Into<Id>, dlc: usize) -> Option<Self> {
+    pub fn new_remote_frame(can_id: SlcanId, dlc: usize) -> Option<Self> {
         match FrameDataLen::try_from(dlc) {
             Ok(fdl) => {
                 let frame = CanserialFrame {
                     rtr: true,
                     dlc: fdl,
-                    id: SlcanId(can_id.into()),
+                    id: can_id,
                     data: [0_u8; 8],
                 };
                 Some(frame)
@@ -267,14 +269,14 @@ impl Frame for CanserialFrame {
     ///
     /// This will return `None` if the data slice is too long.
     fn new(id: impl Into<Id>, data: &[u8]) -> Option<Self> {
-        CanserialFrame::new_frame(id, data)
+        CanserialFrame::new_frame(SlcanId(id.into()), data)
     }
 
     /// Creates a new remote frame (RTR bit set).
     ///
     /// This will return `None` if the data length code (DLC) is not valid.
     fn new_remote(id: impl Into<Id>, dlc: usize) -> Option<Self> {
-        CanserialFrame::new_remote_frame(id, dlc)
+        CanserialFrame::new_remote_frame(SlcanId(id.into()), dlc)
     }
 
     /// Returns true if this frame is a extended frame.
@@ -287,7 +289,7 @@ impl Frame for CanserialFrame {
 
     /// Returns true if this frame is a remote frame.
     fn is_remote_frame(&self) -> bool {
-        !self.rtr
+        self.rtr
     }
 
     /// Returns the frame identifier.
@@ -305,7 +307,11 @@ impl Frame for CanserialFrame {
 
     /// Returns the frame data (0..8 bytes in length).
     fn data(&self) -> &[u8] {
-        &self.data
+        if self.is_remote_frame() {
+            &self.data[0..0]
+        } else {
+            &self.data[0..self.dlc.raw()]
+        }
     }
 }
 
@@ -373,7 +379,7 @@ impl FrameByteStreamHandler {
 mod tests {
     use super::*;
     use core::fmt::Write;
-    use embedded_hal::can::ExtendedId;
+    use embedded_can::ExtendedId;
     use heapless::String;
     use log::*;
     use test_log::test;
@@ -395,22 +401,32 @@ mod tests {
 
     #[test]
     fn new_frame() {
-        let id = Id::Standard(StandardId::new(0x1).unwrap());
+        let id = SlcanId(Id::Standard(StandardId::new(0x1).unwrap()));
         let frame =
             CanserialFrame::new_frame(id, &[0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8]).unwrap();
         assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.id(), id.0);
+        assert!(!frame.is_extended());
         assert_eq!(frame.dlc, FrameDataLen::new(8).unwrap());
+        assert_eq!(frame.dlc(), 8);
         assert_eq!(frame.rtr, false);
+        assert!(!frame.is_remote_frame());
         assert_eq!(frame.data, [0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8]);
+        assert_eq!(frame.data().len(), 8);
         let mut buffer: String<32> = String::new();
         write!(&mut buffer, "{}", frame).unwrap();
         assert_eq!(buffer, "t00180102030405060708");
 
-        let id = Id::Standard(StandardId::new(0x1).unwrap());
+        let id = SlcanId(Id::Standard(StandardId::new(0x1).unwrap()));
         let frame = CanserialFrame::new_remote_frame(id, 4).unwrap();
+        assert!(!frame.is_extended());
         assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
+        assert_eq!(frame.id(), id.0);
         assert_eq!(frame.dlc, FrameDataLen::new(4).unwrap());
+        assert_eq!(frame.dlc(), 4);
         assert_eq!(frame.rtr, true);
+        assert!(frame.is_remote_frame());
+        assert_eq!(frame.data().len(), 0);
         let mut buffer: String<32> = String::new();
         write!(&mut buffer, "{}", frame).unwrap();
         assert_eq!(buffer, "r0014");
@@ -431,10 +447,14 @@ mod tests {
         if parser.have_complete_frame().is_none() {
             panic!();
         }
+        assert!(!frame.is_extended());
         assert_eq!(frame.id.0, Id::Standard(StandardId::new(0x1).unwrap()));
         assert_eq!(frame.dlc, FrameDataLen::new(8).unwrap());
+        assert_eq!(frame.dlc(), 8);
         assert_eq!(frame.rtr, false);
+        assert!(!frame.is_remote_frame());
         assert_eq!(frame.data, [0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(frame.data().len(), 8);
         info!("frame: {}", frame);
     }
 
@@ -521,6 +541,7 @@ mod tests {
         assert_eq!(frame.dlc, FrameDataLen::new(0).unwrap());
         assert_eq!(frame.rtr, false);
         assert_eq!(frame.data, [0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(frame.data().len(), 0);
         info!("frame: {}", frame);
     }
 

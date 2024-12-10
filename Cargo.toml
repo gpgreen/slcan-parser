@@ -2,7 +2,7 @@
 authors = ["Greg Green <ggreen@bit-builder.com>"]
 name = "slcan-parser"
 edition = "2021"
-version = "0.1.0"
+version = "0.2.0"
 description = "Serial CAN frame construction and parsing"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
@@ -12,10 +12,15 @@ keywords = ["serial", "CAN", "parser"]
 categories = ["embedded", "no-std"]
 
 [dependencies]
-embedded-hal = { version = "0.2.7", features = ["unproven"] }
+embedded-can = "0.4"
 machine = "0.3.0"
 log = "0.4.21"
 defmt = { version = "0.3", optional = true }
+
+[dependencies.embedded-hal-02]
+package = "embedded-hal"
+version = "0.2.7"
+features = ["unproven"]
 
 [dev-dependencies]
 test-log = "0.2.11"

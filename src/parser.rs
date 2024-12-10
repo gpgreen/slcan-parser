@@ -6,7 +6,6 @@ use crate::CanserialFrame;
 use crate::FrameDataLen;
 use crate::SlcanError;
 use crate::SlcanId;
-use embedded_hal::can;
 use log::*;
 
 /// function to convert a hex char byte to it's binary value
@@ -336,28 +335,28 @@ impl FrameParser {
         } else if self.can_collect_stdid().is_some() {
             frame.rtr = *self.stdrtr().expect("frame rtr is None");
             let raw_id = match frame.id.0 {
-                can::Id::Standard(id) => id.as_raw(),
+                embedded_can::Id::Standard(id) => id.as_raw(),
                 _ => 0,
             };
             let converted = from_hex(byte)? as u16;
-            let new_id = match can::StandardId::new((raw_id << 4) + converted) {
+            let new_id = match embedded_can::StandardId::new((raw_id << 4) + converted) {
                 Some(x) => x,
                 None => return Err(SlcanError::StandardIdOverflow),
             };
-            frame.id = SlcanId(can::Id::Standard(new_id));
+            frame.id = SlcanId(embedded_can::Id::Standard(new_id));
             debug!("frame id: {:?}", frame.id);
         } else if self.can_collect_extid().is_some() {
             frame.rtr = *self.extrtr().expect("frame rtr is None");
             let raw_id = match frame.id.0 {
-                can::Id::Standard(sid) => sid.as_raw() as u32,
-                can::Id::Extended(eid) => eid.as_raw(),
+                embedded_can::Id::Standard(sid) => sid.as_raw() as u32,
+                embedded_can::Id::Extended(eid) => eid.as_raw(),
             };
             let converted = from_hex(byte)? as u32;
-            let new_id = match embedded_hal::can::ExtendedId::new((raw_id << 4) + converted) {
+            let new_id = match embedded_can::ExtendedId::new((raw_id << 4) + converted) {
                 Some(x) => x,
                 None => return Err(SlcanError::StandardIdOverflow),
             };
-            frame.id = SlcanId(can::Id::Extended(new_id));
+            frame.id = SlcanId(embedded_can::Id::Extended(new_id));
             debug!("frame id: {:?}", frame.id);
         }
         let p = self.on_advance(Advance { byte });
